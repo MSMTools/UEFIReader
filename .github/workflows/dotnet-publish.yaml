@@ -1,0 +1,58 @@
+name: Build artifacts
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            label: Windows-x64
+          - os: windows-latest
+            rid: win-arm64
+            label: Windows-ARM64
+          - os: ubuntu-26.04
+            rid: linux-x64
+            label: Linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            label: Linux-ARM64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v5
+
+    - name: Setup .NET 8.0
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore UEFIReader.sln
+
+    - name: Publish
+      run: >
+        dotnet publish UEFIReader/UEFIReader.csproj
+        -c Release
+        -r ${{ matrix.rid }}
+        -o publish/${{ matrix.label }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.label }}
+        path: publish/${{ matrix.label }}/
+        if-no-files-found: error
