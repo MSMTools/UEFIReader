@@ -208,15 +208,20 @@ namespace UEFIReader
                                 break;
                         }
 
-                        // TODO: Handle when there's more than one PE32/RAW/etc
-                        string outputFileName = $"{moduleName}.{extension}";
+                        string originalFileName = $"{moduleName}.{extension}";
+                        string outputFileName = originalFileName;
+                        int suffix = 1;
+                        while (File.Exists(Path.Combine(combinedPath, outputFileName)))
+                        {
+                            outputFileName = $"{originalFileName}.{suffix++}";
+                        }
+
+                        if (outputFileName != originalFileName)
+                        {
+                            Console.WriteLine(originalFileName + " already exists. Renaming new one to " + outputFileName);
+                        }
 
                         infoutput += $"\r\n   {type}|{outputFileName}|*";
-
-                        if (File.Exists(Path.Combine(combinedPath, outputFileName)))
-                        {
-                            throw new Exception("File Conflict Detected");
-                        }
                         File.WriteAllBytes(Path.Combine(combinedPath, outputFileName), item.DecompressedImage);
                     }
 
