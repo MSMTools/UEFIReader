@@ -46,7 +46,7 @@ namespace UEFIReader
         // The Volume always starts right after the Qualcomm header at position 0x28.
         // So the VolumeHeader-alignment is always complied.
 
-        internal HashSet<Guid> LoadPriority = [];
+        internal List<Guid> LoadPriority = [];
 
         internal string BuildId = "";
 
@@ -109,47 +109,7 @@ namespace UEFIReader
             {
                 if (element.SectionElements.Any(x => IsSectionWithPath(x)))
                 {
-                    EFISection[] sectionsWithPaths = element.SectionElements.Where(x => IsSectionWithPath(x)).ToArray();
-
-                    List<string> filePathsForElement = [];
-                    foreach (EFISection section in sectionsWithPaths)
-                    {
-                        filePathsForElement.AddRange(TryGetFilePath(section.DecompressedImage));
-                    }
-
-                    string outputPath = "";
-                    string moduleName = "";
-                    string baseName = "";
-
-                    EFISection[] uis = element.SectionElements.Where(x => IsSectionWithUI(x)).ToArray();
-
-                    if (filePathsForElement.Count > 0)
-                    {
-                        outputPath = string.Join("/", filePathsForElement[0].Split("/")[..^3]).Replace('/', Path.DirectorySeparatorChar);
-                        moduleName = filePathsForElement[0].Split("/")[^3];
-
-                        if (uis.LongLength > 1)
-                        {
-                            throw new BadImageFormatException();
-                        }
-                        else
-                        {
-                            baseName = uis.LongLength == 1 ? uis[0].Name : moduleName;
-                        }
-                    }
-                    else
-                    {
-                        if (uis.LongLength > 1)
-                        {
-                            throw new BadImageFormatException();
-                        }
-                        else if (uis.LongLength == 1)
-                        {
-                            baseName = uis[0].Name;
-                            moduleName = baseName.Replace(" ", "_");
-                            outputPath = baseName.Replace(" ", "_");
-                        }
-                    }
+                    var (outputPath, moduleName, baseName) = ComputeModuleInfo(element);
 
                     string combinedPath = Path.Combine(Output, outputPath);
                     if (!Directory.Exists(combinedPath))
@@ -302,6 +262,56 @@ namespace UEFIReader
             File.WriteAllLines(Path.Combine(Output, "DXE.inc"), dxeLoadList);
         }
 
+        // Computes the module placement info (outputPath, moduleName, baseName)
+        // shared by ExtractDXEs and ExtractAPRIORI. Mirrors the inline logic that
+        // previously existed in both methods.
+        private (string OutputPath, string ModuleName, string BaseName) ComputeModuleInfo(EFI element)
+        {
+            EFISection[] sectionsWithPaths = element.SectionElements.Where(x => IsSectionWithPath(x)).ToArray();
+
+            List<string> filePathsForElement = [];
+            foreach (EFISection section in sectionsWithPaths)
+            {
+                filePathsForElement.AddRange(TryGetFilePath(section.DecompressedImage));
+            }
+
+            string outputPath = "";
+            string moduleName = "";
+            string baseName = "";
+
+            EFISection[] uis = element.SectionElements.Where(x => IsSectionWithUI(x)).ToArray();
+
+            if (filePathsForElement.Count > 0)
+            {
+                outputPath = string.Join("/", filePathsForElement[0].Split("/")[..^3]).Replace('/', Path.DirectorySeparatorChar);
+                moduleName = filePathsForElement[0].Split("/")[^3];
+
+                if (uis.LongLength > 1)
+                {
+                    throw new BadImageFormatException();
+                }
+                else
+                {
+                    baseName = uis.LongLength == 1 ? uis[0].Name : moduleName;
+                }
+            }
+            else
+            {
+                if (uis.LongLength > 1)
+                {
+                    throw new BadImageFormatException();
+                }
+                else if (uis.LongLength == 1)
+                {
+                    baseName = uis[0].Name;
+                    moduleName = baseName.Replace(" ", "_");
+                    outputPath = baseName.Replace(" ", "_");
+                }
+            }
+
+            return (outputPath, moduleName, baseName);
+        }
+
         internal void ExtractAPRIORI(string Output)
         {
             List<string> aprioriLoadList =
@@ -309,56 +319,29 @@ namespace UEFIReader
                 "APRIORI DXE {"
             ];
 
+            // Build a guid -> "outputPath/moduleName.inf" map for every module
+            // that produces an .inf (i.e. has a section carrying a build path).
+            Dictionary<Guid, string> guidToInf = [];
             foreach (EFI element in EFIs)
             {
                 if (element.SectionElements.Any(x => IsSectionWithPath(x)))
                 {
-                    EFISection[] sectionsWithPaths = element.SectionElements.Where(x => IsSectionWithPath(x)).ToArray();
-
-                    List<string> filePathsForElement = [];
-                    foreach (EFISection? section in sectionsWithPaths)
+                    var (outputPath, moduleName, _) = ComputeModuleInfo(element);
+                    if (!string.IsNullOrEmpty(moduleName))
                     {
-                        filePathsForElement.AddRange(TryGetFilePath(section.DecompressedImage));
+                        guidToInf[element.Guid] = Path.Combine(outputPath, moduleName + ".inf").Replace("\\", "/");
                     }
+                }
+            }
 
-                    string outputPath = "";
-                    string moduleName = "";
-                    string baseName = "";
-
-                    EFISection[] uis = element.SectionElements.Where(x => IsSectionWithUI(x)).ToArray();
-
-                    if (filePathsForElement.Count > 0)
-                    {
-                        outputPath = string.Join("/", filePathsForElement[0].Split("/")[..^3]).Replace('/', Path.DirectorySeparatorChar);
-                        moduleName = filePathsForElement[0].Split("/")[^3];
-
-                        if (uis.LongLength > 1)
-                        {
-                            throw new BadImageFormatException();
-                        }
-                        else
-                        {
-                            baseName = uis.LongLength == 1 ? uis[0].Name : moduleName;
-                        }
-                    }
-                    else
-                    {
-                        if (uis.LongLength > 1)
-                        {
-                            throw new BadImageFormatException();
-                        }
-                        else if (uis.LongLength == 1)
-                        {
-                            baseName = uis[0].Name;
-                            moduleName = baseName.Replace(" ", "_");
-                            outputPath = baseName.Replace(" ", "_");
-                        }
-                    }
-
-                    if (LoadPriority.Contains(element.Guid))
-                    {
-                        aprioriLoadList.Add($"    INF {Path.Combine(outputPath, moduleName + ".inf").Replace("\\", "/")}");
-                    }
+            // Emit in the order the GUIDs appear in the APRIORI file
+            // (LoadPriority), which is the DXE dispatch order mandated by the
+            // UEFI PI spec.
+            foreach (Guid g in LoadPriority)
+            {
+                if (guidToInf.TryGetValue(g, out string? relInf))
+                {
+                    aprioriLoadList.Add($"    INF {relInf}");
                 }
             }
 
@@ -462,7 +445,10 @@ namespace UEFIReader
                                     {
                                         Guid dependencyGuid = ByteOperations.ReadGuid(elements[0].DecompressedImage, i);
                                         Debug.WriteLine(dependencyGuid.ToString().ToUpper());
-                                        _ = LoadPriority.Add(dependencyGuid);
+                                        if (!LoadPriority.Contains(dependencyGuid))
+                                        {
+                                            LoadPriority.Add(dependencyGuid);
+                                        }
                                     }
                                 }
                             }
