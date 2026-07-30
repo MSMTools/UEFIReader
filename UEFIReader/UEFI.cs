@@ -373,7 +373,7 @@ namespace UEFIReader
                 throw new BadImageFormatException();
             }
 
-            uint VolumeSize = ByteOperations.ReadUInt32(Input, Offset + 0x20); // TODO: This is actually a QWORD
+            ulong VolumeSize = ByteOperations.ReadUInt64(Input, Offset + 0x20);
             ushort VolumeHeaderSize = ByteOperations.ReadUInt16(Input, Offset + 0x30);
             byte PaddingByteValue = (ByteOperations.ReadUInt32(Input, Offset + 0x2C) & 0x00000800) > 0 ? (byte)0xFF : (byte)0x00; // EFI_FVB_ERASE_POLARITY = 0x00000800
 
@@ -561,10 +561,10 @@ namespace UEFIReader
 
         internal byte[] ReadSectionDataBuffer(byte[] Input, ulong Offset)
         {
-            (uint SectionSize, _) = ReadSectionMetadata(Input, Offset);
+            (uint SectionSize, _, uint SectionHeaderSize) = ReadSectionMetadata(Input, Offset);
 
-            byte[] buffer = new byte[SectionSize - 0x04];
-            Array.Copy(Input, (int)Offset + 0x04, buffer, 0, buffer.LongLength);
+            byte[] buffer = new byte[SectionSize - SectionHeaderSize];
+            Array.Copy(Input, (long)Offset + SectionHeaderSize, buffer, 0, buffer.LongLength);
 
             return buffer;
         }
@@ -580,7 +580,7 @@ namespace UEFIReader
                     throw new BadImageFormatException();
                 }
 
-                (uint SectionSize, byte SectionType) = ReadSectionMetadata(Input, Offset);
+                (uint SectionSize, byte SectionType, uint SectionHeaderSize) = ReadSectionMetadata(Input, Offset);
 
                 if ((long)Offset + SectionSize > Input.LongLength || SectionSize == 0)
                 {
@@ -627,7 +627,7 @@ namespace UEFIReader
                     case 0x15: // EFI_SECTION_USER_INTERFACE
                         {
                             Debug.WriteLine("EFI_SECTION_USER_INTERFACE");
-                            fileElements.Add(new() { Type = "UI", DecompressedImage = ReadSectionDataBuffer(Input, Offset), Name = ByteOperations.ReadUnicodeString(Input, Offset + 0x04, SectionSize - 0x04).TrimEnd(new char[] { (char)0, ' ' }) });
+                            fileElements.Add(new() { Type = "UI", DecompressedImage = ReadSectionDataBuffer(Input, Offset), Name = ByteOperations.ReadUnicodeString(Input, Offset + SectionHeaderSize, SectionSize - SectionHeaderSize).TrimEnd(new char[] { (char)0, ' ' }) });
                             break;
                         }
                     case 0x17: // EFI_SECTION_FIRMWARE_VOLUME_IMAGE
@@ -676,12 +676,19 @@ namespace UEFIReader
             return fileElements.ToArray();
         }
 
-        internal (uint SectionSize, byte SectionType) ReadSectionMetadata(byte[] Input, ulong Offset)
+        internal (uint SectionSize, byte SectionType, uint SectionHeaderSize) ReadSectionMetadata(byte[] Input, ulong Offset)
         {
             uint SectionSize = ByteOperations.ReadUInt24(Input, Offset + 0x00);
             byte SectionType = ByteOperations.ReadUInt8(Input, Offset + 0x03);
+            uint SectionHeaderSize = 0x04;
 
-            return (SectionSize, SectionType);
+            if (SectionSize == 0xFFFFFF && SectionType is not 0x00 and not 0xFF) // EFI_COMMON_SECTION_HEADER2
+            {
+                SectionSize = ByteOperations.ReadUInt32(Input, Offset + 0x04);
+                SectionHeaderSize = 0x08;
+            }
+
+            return (SectionSize, SectionType, SectionHeaderSize);
         }
 
         internal (byte FileType, ulong FileSize, uint FileHeaderSize, Guid FileGuid) ReadFileMetadata(byte[] Input, ulong Offset)
@@ -696,7 +703,7 @@ namespace UEFIReader
             ulong FileSize = ByteOperations.ReadUInt24(Input, Offset + 0x14);
             uint FileHeaderSize = 0x18;
 
-            if (Attributes == 0x41)
+            if ((Attributes & 0x01) != 0) // FFS_ATTRIB_LARGE_FILE
             {
                 FileSize = ByteOperations.ReadUInt64(Input, Offset + 0x18);
                 FileHeaderSize = 0x20;
@@ -710,7 +717,7 @@ namespace UEFIReader
             byte[] DecompressedImage;
 
             // Decompress subvolume
-            (uint SectionSize, byte SectionType) = ReadSectionMetadata(Input, Offset);
+            (uint SectionSize, byte SectionType, uint CommonHeaderSize) = ReadSectionMetadata(Input, Offset);
 
             if (SectionType != 0x02) // EFI_SECTION_GUID_DEFINED
             {
@@ -718,9 +725,9 @@ namespace UEFIReader
             }
 
             byte[] SectionGuidBytes = new byte[0x10];
-            Array.Copy(Input, (int)Offset + 0x04, SectionGuidBytes, 0, 0x10);
+            Array.Copy(Input, (long)Offset + CommonHeaderSize, SectionGuidBytes, 0, 0x10);
             Guid SectionGuid = new(SectionGuidBytes);
-            ushort SectionHeaderSize = ByteOperations.ReadUInt16(Input, Offset + 0x14);
+            ushort SectionHeaderSize = ByteOperations.ReadUInt16(Input, Offset + CommonHeaderSize + 0x10);
 
             ulong CompressedSubImageOffset = Offset + SectionHeaderSize;
             uint CompressedSubImageSize = SectionSize - SectionHeaderSize;
@@ -793,7 +800,7 @@ namespace UEFIReader
             byte Attributes = ByteOperations.ReadUInt8(Image, Offset + 0x13);
             ulong FileSize = ByteOperations.ReadUInt24(Image, Offset + 0x14);
 
-            if (Attributes == 0x41)
+            if ((Attributes & 0x01) != 0) // FFS_ATTRIB_LARGE_FILE
             {
                 FileSize = ByteOperations.ReadUInt64(Image, Offset + 0x18);
                 FileHeaderSize = 0x20;
